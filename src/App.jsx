@@ -32,6 +32,16 @@ import {
   Download,
   History,
   Power,
+  Utensils,
+  TrendingUp,
+  Wrench,
+  Stethoscope,
+  Plus,
+  Trash2,
+  Wifi,
+  WifiOff,
+  Clock,
+  PauseCircle,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -261,6 +271,30 @@ const CATEGORIES = [
 const HISTORY_LEN = 36;
 
 // ---------------------------------------------------------------------------
+// Feeding log
+// ---------------------------------------------------------------------------
+const FEED_TYPES = ["Cow manure", "Chicken litter", "Food waste", "Crop residue", "Mixed slurry", "Other"];
+const QUALITY_FLAGS = [
+  { id: "good", label: "Good ratio", color: C.green },
+  { id: "overfed", label: "Overfed", color: C.red },
+  { id: "underfed", label: "Underfed", color: C.amber },
+];
+
+// ---------------------------------------------------------------------------
+// Maintenance log — the failure modes sensors don't catch (desludging, seals,
+// PPE) get their own recommended-interval tracking, same as a sensor hazard.
+// ---------------------------------------------------------------------------
+const MAINTENANCE_TASKS = [
+  { id: "desludging", label: "Desludging", intervalDays: 180, note: "Removing accumulated sludge restores working volume and prevents outlet blockages." },
+  { id: "seal", label: "Seal / gasket check", intervalDays: 30, note: "Worn seals are a common source of the small leaks ambient sensors catch late." },
+  { id: "ppe", label: "PPE check", intervalDays: 14, note: "Gas masks, gloves and gauges in working order before anyone opens the system." },
+  { id: "prv", label: "Pressure relief valve check", intervalDays: 90, note: "A stuck PRV turns a normal pressure spike into a real hazard." },
+  { id: "inspection", label: "General inspection", intervalDays: 30, note: "Visual check of pipework, digester structure and surrounding area." },
+];
+const MAINTENANCE_STATUS_COLOR = { ok: C.green, due: C.amber, overdue: C.red };
+const MAINTENANCE_STATUS_LABEL = { ok: "OK", due: "Due soon", overdue: "Overdue" };
+
+// ---------------------------------------------------------------------------
 // Simulation helpers
 // ---------------------------------------------------------------------------
 function nextValue(def, prev) {
@@ -296,6 +330,54 @@ function initHistory(def) {
     arr.push({ t: i, v });
   }
   return arr;
+}
+
+// ---------------------------------------------------------------------------
+// Daily rollups for the History / Trends tab. Generated once per sensor to
+// stand in for what would otherwise be months of real logged readings —
+// each day simulates 24 hourly samples and keeps their avg/min/max.
+// ---------------------------------------------------------------------------
+const ROLLUP_DAYS = 180;
+
+function genDailyRollup(def) {
+  const days = [];
+  let v = def.baseline;
+  const now = Date.now();
+  for (let d = ROLLUP_DAYS - 1; d >= 0; d--) {
+    let dayMin = Infinity;
+    let dayMax = -Infinity;
+    let sum = 0;
+    for (let h = 0; h < 24; h++) {
+      v = nextValue(def, v);
+      dayMin = Math.min(dayMin, v);
+      dayMax = Math.max(dayMax, v);
+      sum += v;
+    }
+    days.push({
+      date: now - d * 86400000,
+      avg: round2(sum / 24),
+      min: round2(dayMin),
+      max: round2(dayMax),
+    });
+  }
+  return days;
+}
+
+function aggregateRollup(daily, bucketDays) {
+  const buckets = [];
+  for (let i = 0; i < daily.length; i += bucketDays) {
+    const slice = daily.slice(i, i + bucketDays);
+    if (slice.length === 0) continue;
+    const avg = round2(slice.reduce((a, d) => a + d.avg, 0) / slice.length);
+    const min = round2(Math.min(...slice.map((d) => d.min)));
+    const max = round2(Math.max(...slice.map((d) => d.max)));
+    buckets.push({ date: slice[slice.length - 1].date, startDate: slice[0].date, avg, min, max });
+  }
+  return buckets;
+}
+
+function fmtShortDate(ms) {
+  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 // ---------------------------------------------------------------------------
@@ -463,7 +545,7 @@ const EVENT_STYLE = {
   shutoff: { color: C.red, icon: AlertOctagon },
 };
 
-function OverviewTab({ histories, onJump, events, calibration }) {
+function OverviewTab({ histories, onJump, events, calibration, onAcknowledge }) {
   const catSummaries = CATEGORIES.map((cat) => ({
     ...cat,
     ...categoryStatus(cat.id, histories, calibration),
@@ -598,40 +680,98 @@ function OverviewTab({ histories, onJump, events, calibration }) {
         )}
       </div>
 
-      {/* recent events */}
+      {/* alert history with acknowledgment */}
       <div className="rounded-lg p-5" style={{ background: C.panel, border: `1px solid ${C.line}` }}>
-        <div className="flex items-center gap-2 mb-3">
-          <History size={13} color={C.textFaint} />
-          <span className="text-xs" style={{ color: C.textFaint, fontFamily: sansFont }}>
-            Recent events
-          </span>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <History size={13} color={C.textFaint} />
+            <span className="text-xs" style={{ color: C.textFaint, fontFamily: sansFont }}>
+              Alert history
+            </span>
+          </div>
+          {events.length > 0 && (
+            <span className="text-[11px]" style={{ color: C.textFaint, fontFamily: monoFont }}>
+              {events.filter((e) => !e.acknowledged).length} unacknowledged
+            </span>
+          )}
         </div>
         {events.length === 0 ? (
           <p className="text-sm" style={{ color: C.textDim, fontFamily: sansFont }}>
             No events logged yet this session.
           </p>
         ) : (
-          <div className="space-y-2" style={{ maxHeight: 220, overflowY: "auto" }}>
-            {events.slice(0, 12).map((e) => {
-              const style = EVENT_STYLE[e.type] || EVENT_STYLE.info;
-              const Icon = style.icon;
-              return (
-                <div key={e.id} className="flex items-start gap-2.5">
-                  <Icon size={13} color={style.color} style={{ marginTop: 2 }} />
-                  <div className="flex-1">
-                    <div className="text-xs" style={{ color: C.textDim, fontFamily: sansFont }}>
-                      {e.message}
-                    </div>
-                  </div>
-                  <span className="text-[11px] shrink-0" style={{ color: C.textFaint, fontFamily: monoFont }}>
-                    {new Date(e.time).toLocaleTimeString()}
-                  </span>
-                </div>
-              );
-            })}
+          <div className="space-y-2" style={{ maxHeight: 320, overflowY: "auto" }}>
+            {events.slice(0, 20).map((e) => (
+              <EventRow key={e.id} event={e} onAcknowledge={onAcknowledge} />
+            ))}
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function EventRow({ event: e, onAcknowledge }) {
+  const [editing, setEditing] = useState(false);
+  const [note, setNote] = useState("");
+  const style = EVENT_STYLE[e.type] || EVENT_STYLE.info;
+  const Icon = style.icon;
+
+  return (
+    <div className="rounded-md px-3 py-2" style={{ background: C.panelAlt, opacity: e.acknowledged ? 0.65 : 1 }}>
+      <div className="flex items-start gap-2.5">
+        <Icon size={13} color={style.color} style={{ marginTop: 2 }} />
+        <div className="flex-1">
+          <div className="text-xs" style={{ color: C.textDim, fontFamily: sansFont }}>
+            {e.message}
+          </div>
+          {e.acknowledged && (
+            <div className="flex items-center gap-1.5 mt-1 text-[11px]" style={{ color: C.green, fontFamily: sansFont }}>
+              <CheckCircle2 size={11} />
+              Acknowledged{e.note ? `: ${e.note}` : ""}
+            </div>
+          )}
+        </div>
+        <span className="text-[11px] shrink-0" style={{ color: C.textFaint, fontFamily: monoFont }}>
+          {new Date(e.time).toLocaleTimeString()}
+        </span>
+      </div>
+
+      {!e.acknowledged && !editing && (
+        <button
+          onClick={() => setEditing(true)}
+          className="text-[11px] mt-1.5 ml-[22px]"
+          style={{ color: C.amber, fontFamily: sansFont }}
+        >
+          Acknowledge
+        </button>
+      )}
+
+      {!e.acknowledged && editing && (
+        <div className="flex items-center gap-2 mt-2 ml-[22px]">
+          <input
+            autoFocus
+            value={note}
+            onChange={(ev) => setNote(ev.target.value)}
+            placeholder="Optional note, e.g. checked, was a feeding gap"
+            className="flex-1"
+            style={{ ...smallInputStyle, padding: "6px 9px", fontFamily: sansFont, fontSize: 12 }}
+          />
+          <button
+            onClick={() => {
+              onAcknowledge(e.id, note.trim());
+              setEditing(false);
+            }}
+            className="text-[11px] px-2.5 py-1.5 rounded-md"
+            style={{ background: C.amber, color: C.bg, fontFamily: sansFont, fontWeight: 500 }}
+          >
+            Save
+          </button>
+          <button onClick={() => setEditing(false)} className="text-[11px]" style={{ color: C.textFaint, fontFamily: sansFont }}>
+            Cancel
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -829,6 +969,550 @@ function CategoryTab({ catId, selected, setSelected, histories, calibration }) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+const smallInputStyle = {
+  background: C.panelAlt,
+  border: `1px solid ${C.line}`,
+  borderRadius: 6,
+  padding: "8px 10px",
+  color: C.text,
+  fontFamily: monoFont,
+  fontSize: 13,
+  outline: "none",
+  boxSizing: "border-box",
+  width: "100%",
+};
+
+function nowLocalInputValue() {
+  const d = new Date();
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 16);
+}
+
+// ---------------------------------------------------------------------------
+// Feeding log — without this, nothing else on the dashboard can be explained.
+// ---------------------------------------------------------------------------
+function FeedingTab({ feedingLog, onAdd, onDelete }) {
+  const [form, setForm] = useState({
+    time: nowLocalInputValue(),
+    quantity: "",
+    unit: "kg",
+    feedType: FEED_TYPES[0],
+    quality: "good",
+  });
+  const [error, setError] = useState("");
+
+  const submit = () => {
+    if (!(parseFloat(form.quantity) > 0)) {
+      setError("Enter a quantity greater than 0.");
+      return;
+    }
+    setError("");
+    onAdd({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      time: new Date(form.time).getTime() || Date.now(),
+      quantity: parseFloat(form.quantity),
+      unit: form.unit,
+      feedType: form.feedType,
+      quality: form.quality,
+    });
+    setForm((f) => ({ ...f, quantity: "" }));
+  };
+
+  const sorted = [...feedingLog].sort((a, b) => b.time - a.time);
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-lg p-5" style={{ background: C.panel, border: `1px solid ${C.line}` }}>
+        <div className="flex items-center gap-2 mb-4">
+          <Utensils size={15} color={C.textDim} />
+          <h2 className="text-sm" style={{ color: C.text, fontFamily: sansFont, fontWeight: 500 }}>
+            Log a feeding
+          </h2>
+        </div>
+        <div className="grid gap-3" style={{ gridTemplateColumns: "1.3fr 0.8fr 0.6fr 1fr 1fr auto" }}>
+          <Field label="Date / time">
+            <input
+              type="datetime-local"
+              style={{ ...smallInputStyle, fontFamily: sansFont }}
+              value={form.time}
+              onChange={(e) => setForm((f) => ({ ...f, time: e.target.value }))}
+            />
+          </Field>
+          <Field label="Quantity">
+            <input
+              type="number"
+              min="0"
+              step="0.1"
+              style={smallInputStyle}
+              value={form.quantity}
+              onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))}
+              placeholder="e.g. 25"
+            />
+          </Field>
+          <Field label="Unit">
+            <select style={{ ...smallInputStyle, fontFamily: sansFont }} value={form.unit} onChange={(e) => setForm((f) => ({ ...f, unit: e.target.value }))}>
+              <option value="kg">kg</option>
+              <option value="L">L</option>
+            </select>
+          </Field>
+          <Field label="Feed type">
+            <select style={{ ...smallInputStyle, fontFamily: sansFont }} value={form.feedType} onChange={(e) => setForm((f) => ({ ...f, feedType: e.target.value }))}>
+              {FEED_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Quality flag">
+            <select style={{ ...smallInputStyle, fontFamily: sansFont }} value={form.quality} onChange={(e) => setForm((f) => ({ ...f, quality: e.target.value }))}>
+              {QUALITY_FLAGS.map((q) => (
+                <option key={q.id} value={q.id}>
+                  {q.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <div className="flex items-end">
+            <button
+              onClick={submit}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-md text-xs"
+              style={{ background: C.amber, color: C.bg, fontFamily: sansFont, fontWeight: 500 }}
+            >
+              <Plus size={13} />
+              Add
+            </button>
+          </div>
+        </div>
+        {error && <p className="text-[11px] mt-2" style={{ color: C.red }}>{error}</p>}
+      </div>
+
+      <div className="rounded-lg p-5" style={{ background: C.panel, border: `1px solid ${C.line}` }}>
+        <div className="text-xs mb-3" style={{ color: C.textFaint, fontFamily: sansFont }}>
+          Feeding history ({sorted.length})
+        </div>
+        {sorted.length === 0 ? (
+          <p className="text-sm" style={{ color: C.textDim, fontFamily: sansFont }}>
+            No feedings logged yet — add the first one above.
+          </p>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table className="w-full" style={{ borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${C.line}` }}>
+                  {["Date / time", "Quantity", "Feed type", "Quality", ""].map((h) => (
+                    <th key={h} className="text-left py-2 px-2 text-[11px]" style={{ color: C.textFaint, fontFamily: sansFont, fontWeight: 500 }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((e) => {
+                  const q = QUALITY_FLAGS.find((f) => f.id === e.quality) || QUALITY_FLAGS[0];
+                  return (
+                    <tr key={e.id} style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+                      <td className="py-2 px-2 text-xs" style={{ color: C.textDim, fontFamily: monoFont }}>
+                        {new Date(e.time).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                      </td>
+                      <td className="py-2 px-2 text-xs" style={{ color: C.text, fontFamily: monoFont }}>
+                        {e.quantity} {e.unit}
+                      </td>
+                      <td className="py-2 px-2 text-xs" style={{ color: C.textDim, fontFamily: sansFont }}>
+                        {e.feedType}
+                      </td>
+                      <td className="py-2 px-2 text-xs">
+                        <span className="flex items-center gap-1.5" style={{ color: q.color, fontFamily: sansFont }}>
+                          <StatusDot status={q.id === "good" ? "normal" : q.id === "overfed" ? "critical" : "warning"} />
+                          {q.label}
+                        </span>
+                      </td>
+                      <td className="py-2 px-2 text-right">
+                        <button onClick={() => onDelete(e.id)} style={{ color: C.textFaint }} title="Remove entry">
+                          <Trash2 size={13} />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// History / Trends — weekly or monthly rollups so drift is visible without
+// scrolling a live chart looking for a slope.
+// ---------------------------------------------------------------------------
+function HistoryTab({ dailyRollups, calibration }) {
+  const enabled = SENSORS.filter((s) => isSensorEnabled(s, calibration));
+  const [selected, setSelected] = useState(enabled[0]?.id);
+  const [granularity, setGranularity] = useState("weekly");
+
+  if (enabled.length === 0) {
+    return (
+      <div className="rounded-lg p-8 text-center" style={{ background: C.panel, border: `1px solid ${C.line}` }}>
+        <p className="text-sm" style={{ color: C.textDim, fontFamily: sansFont }}>
+          No sensors enabled — there's nothing to show trends for yet.
+        </p>
+      </div>
+    );
+  }
+
+  const def = enabled.find((s) => s.id === selected) || enabled[0];
+  const daily = dailyRollups[def.id] || [];
+  const buckets = aggregateRollup(daily, granularity === "weekly" ? 7 : 30);
+
+  const allVals = buckets.flatMap((b) => [b.min, b.max]);
+  const domainMin = Math.min(...allVals, def.idealMin ?? Infinity, def.hazardLow ?? Infinity);
+  const domainMax = Math.max(...allVals, def.idealMax ?? -Infinity, def.hazardHigh ?? -Infinity);
+  const pad = (domainMax - domainMin) * 0.1 || 1;
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <select style={{ ...inputStyle, width: "auto", minWidth: 220 }} value={def.id} onChange={(e) => setSelected(e.target.value)}>
+          {CATEGORIES.map((cat) => (
+            <optgroup key={cat.id} label={cat.label}>
+              {enabled
+                .filter((s) => s.category === cat.id)
+                .map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.label}
+                  </option>
+                ))}
+            </optgroup>
+          ))}
+        </select>
+        <div className="flex rounded-md overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
+          {[
+            { id: "weekly", label: "Weekly" },
+            { id: "monthly", label: "Monthly" },
+          ].map((opt) => (
+            <button
+              key={opt.id}
+              onClick={() => setGranularity(opt.id)}
+              className="px-3 py-1.5 text-xs transition-colors"
+              style={{
+                fontFamily: sansFont,
+                background: granularity === opt.id ? C.panelAlt : "transparent",
+                color: granularity === opt.id ? C.text : C.textDim,
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-lg p-5" style={{ background: C.panel, border: `1px solid ${C.line}` }}>
+        <h2 className="text-base mb-1" style={{ color: C.text, fontFamily: sansFont, fontWeight: 500 }}>
+          {def.label}
+        </h2>
+        <p className="text-xs mb-4" style={{ color: C.textFaint, fontFamily: sansFont }}>
+          {granularity === "weekly" ? "Last 26 weeks" : "Last 6 months"}, showing daily avg / min / max rolled up per {granularity === "weekly" ? "week" : "month"}.
+        </p>
+        <div className="h-72">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={buckets} margin={{ top: 8, right: 12, bottom: 0, left: -12 }}>
+              <CartesianGrid stroke={C.lineSoft} vertical={false} />
+              <XAxis dataKey="date" tickFormatter={fmtShortDate} tick={{ fill: C.textFaint, fontSize: 11, fontFamily: monoFont }} axisLine={{ stroke: C.line }} tickLine={false} />
+              <YAxis
+                domain={[domainMin - pad, domainMax + pad]}
+                tick={{ fill: C.textFaint, fontSize: 11, fontFamily: monoFont }}
+                axisLine={{ stroke: C.line }}
+                tickLine={false}
+                width={48}
+              />
+              {def.idealMin != null && def.idealMax != null && def.idealMin !== def.idealMax && (
+                <ReferenceArea y1={def.idealMin} y2={def.idealMax} fill={C.greenSoft} fillOpacity={1} />
+              )}
+              {def.hazardHigh != null && <ReferenceLine y={def.hazardHigh} stroke={C.red} strokeDasharray="4 3" strokeWidth={1} />}
+              {def.hazardLow != null && <ReferenceLine y={def.hazardLow} stroke={C.red} strokeDasharray="4 3" strokeWidth={1} />}
+              <Tooltip
+                contentStyle={{ background: C.panelAlt, border: `1px solid ${C.line}`, borderRadius: 6, fontFamily: monoFont, fontSize: 12 }}
+                labelFormatter={fmtShortDate}
+                formatter={(v, name) => [`${v} ${def.unit}`, name]}
+              />
+              <Line type="monotone" dataKey="max" name="max" stroke={C.textFaint} strokeWidth={1} dot={false} strokeDasharray="3 3" isAnimationActive={false} />
+              <Line type="monotone" dataKey="min" name="min" stroke={C.textFaint} strokeWidth={1} dot={false} strokeDasharray="3 3" isAnimationActive={false} />
+              <Line type="monotone" dataKey="avg" name="avg" stroke={C.amber} strokeWidth={2} dot={false} isAnimationActive={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="rounded-lg p-5" style={{ background: C.panel, border: `1px solid ${C.line}` }}>
+        <div className="text-xs mb-3" style={{ color: C.textFaint, fontFamily: sansFont }}>
+          Rollup detail
+        </div>
+        <div style={{ maxHeight: 260, overflowY: "auto" }}>
+          <table className="w-full" style={{ borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ borderBottom: `1px solid ${C.line}` }}>
+                {["Period", "Avg", "Min", "Max"].map((h) => (
+                  <th key={h} className="text-left py-2 px-2 text-[11px]" style={{ color: C.textFaint, fontFamily: sansFont, fontWeight: 500 }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[...buckets].reverse().map((b) => (
+                <tr key={b.date} style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+                  <td className="py-2 px-2 text-xs" style={{ color: C.textDim, fontFamily: monoFont }}>
+                    {fmtShortDate(b.startDate)} – {fmtShortDate(b.date)}
+                  </td>
+                  <td className="py-2 px-2 text-xs" style={{ color: C.text, fontFamily: monoFont }}>
+                    {b.avg} {def.unit}
+                  </td>
+                  <td className="py-2 px-2 text-xs" style={{ color: C.textFaint, fontFamily: monoFont }}>
+                    {b.min} {def.unit}
+                  </td>
+                  <td className="py-2 px-2 text-xs" style={{ color: C.textFaint, fontFamily: monoFont }}>
+                    {b.max} {def.unit}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance log — the failure modes no sensor catches (desludging, seals,
+// PPE), tracked with the same overdue/due-soon/OK language as sensor status.
+// ---------------------------------------------------------------------------
+function MaintenanceTab({ maintenanceLog, onAdd }) {
+  const [form, setForm] = useState({ taskId: MAINTENANCE_TASKS[0].id, date: nowLocalInputValue().slice(0, 10), notes: "", loggedBy: "" });
+
+  const taskStats = MAINTENANCE_TASKS.map((task) => {
+    const entries = maintenanceLog.filter((e) => e.taskId === task.id).sort((a, b) => b.date - a.date);
+    const last = entries[0];
+    const daysSince = last ? (Date.now() - last.date) / 86400000 : null;
+    let status = "overdue";
+    if (daysSince != null) {
+      if (daysSince <= task.intervalDays * 0.8) status = "ok";
+      else if (daysSince <= task.intervalDays) status = "due";
+    }
+    return { task, last, daysSince, status };
+  });
+
+  const logNow = (taskId) => {
+    onAdd({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      taskId,
+      date: Date.now(),
+      notes: "",
+      loggedBy: "",
+    });
+  };
+
+  const submitForm = () => {
+    onAdd({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      taskId: form.taskId,
+      date: new Date(form.date).getTime() || Date.now(),
+      notes: form.notes,
+      loggedBy: form.loggedBy,
+    });
+    setForm((f) => ({ ...f, notes: "" }));
+  };
+
+  const sortedLog = [...maintenanceLog].sort((a, b) => b.date - a.date);
+
+  return (
+    <div className="space-y-5">
+      <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))" }}>
+        {taskStats.map(({ task, last, daysSince, status }) => (
+          <div key={task.id} className="rounded-lg p-4" style={{ background: C.panel, border: `1px solid ${status === "ok" ? C.line : MAINTENANCE_STATUS_COLOR[status]}` }}>
+            <div className="flex items-start justify-between mb-2">
+              <span className="text-xs" style={{ color: C.text, fontFamily: sansFont, fontWeight: 500 }}>
+                {task.label}
+              </span>
+              <span className="flex items-center gap-1.5 text-[11px]" style={{ color: MAINTENANCE_STATUS_COLOR[status], fontFamily: sansFont }}>
+                <StatusDot status={status === "ok" ? "normal" : status === "due" ? "warning" : "critical"} />
+                {MAINTENANCE_STATUS_LABEL[status]}
+              </span>
+            </div>
+            <p className="text-[11px] mb-3" style={{ color: C.textFaint, fontFamily: sansFont }}>
+              {task.note}
+            </p>
+            <div className="text-xs mb-3" style={{ color: C.textDim, fontFamily: monoFont }}>
+              {last ? `Last: ${fmtShortDate(last.date)} (${Math.floor(daysSince)}d ago)` : "Never logged"}
+              <span style={{ color: C.textFaint }}> · every {task.intervalDays}d</span>
+            </div>
+            <button
+              onClick={() => logNow(task.id)}
+              className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md"
+              style={{ background: C.panelAlt, color: C.textDim, fontFamily: sansFont }}
+            >
+              <CheckCircle2 size={12} />
+              Log completed today
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-lg p-5" style={{ background: C.panel, border: `1px solid ${C.line}` }}>
+        <div className="flex items-center gap-2 mb-4">
+          <Wrench size={15} color={C.textDim} />
+          <h2 className="text-sm" style={{ color: C.text, fontFamily: sansFont, fontWeight: 500 }}>
+            Log a maintenance entry
+          </h2>
+        </div>
+        <div className="grid gap-3" style={{ gridTemplateColumns: "1fr 0.8fr 1.6fr 1fr auto" }}>
+          <Field label="Task">
+            <select style={{ ...smallInputStyle, fontFamily: sansFont }} value={form.taskId} onChange={(e) => setForm((f) => ({ ...f, taskId: e.target.value }))}>
+              {MAINTENANCE_TASKS.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Date">
+            <input type="date" style={{ ...smallInputStyle, fontFamily: sansFont }} value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} />
+          </Field>
+          <Field label="Notes">
+            <input style={smallInputStyle} value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} placeholder="Optional" />
+          </Field>
+          <Field label="Logged by">
+            <input style={smallInputStyle} value={form.loggedBy} onChange={(e) => setForm((f) => ({ ...f, loggedBy: e.target.value }))} placeholder="Optional" />
+          </Field>
+          <div className="flex items-end">
+            <button
+              onClick={submitForm}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-md text-xs"
+              style={{ background: C.amber, color: C.bg, fontFamily: sansFont, fontWeight: 500 }}
+            >
+              <Plus size={13} />
+              Add
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-lg p-5" style={{ background: C.panel, border: `1px solid ${C.line}` }}>
+        <div className="text-xs mb-3" style={{ color: C.textFaint, fontFamily: sansFont }}>
+          Maintenance history ({sortedLog.length})
+        </div>
+        {sortedLog.length === 0 ? (
+          <p className="text-sm" style={{ color: C.textDim, fontFamily: sansFont }}>
+            Nothing logged yet.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {sortedLog.map((e) => {
+              const task = MAINTENANCE_TASKS.find((t) => t.id === e.taskId);
+              return (
+                <div key={e.id} className="flex items-start justify-between px-3 py-2 rounded-md" style={{ background: C.panelAlt }}>
+                  <div>
+                    <div className="text-xs" style={{ color: C.text, fontFamily: sansFont }}>
+                      {task?.label}
+                      {e.loggedBy && <span style={{ color: C.textFaint }}> · {e.loggedBy}</span>}
+                    </div>
+                    {e.notes && (
+                      <div className="text-[11px] mt-0.5" style={{ color: C.textFaint, fontFamily: sansFont }}>
+                        {e.notes}
+                      </div>
+                    )}
+                  </div>
+                  <span className="text-[11px] shrink-0" style={{ color: C.textFaint, fontFamily: monoFont }}>
+                    {fmtShortDate(e.date)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sensor diagnostics — turns "stopped updating" into its own visible state
+// instead of a silently flat line that looks like stability.
+// ---------------------------------------------------------------------------
+const DIAG_STATUS = {
+  reporting: { label: "Reporting", color: C.green, icon: Wifi },
+  stale: { label: "Stale", color: C.red, icon: WifiOff },
+  paused: { label: "Paused", color: C.amber, icon: PauseCircle },
+  not_installed: { label: "Not installed", color: C.textFaint, icon: WifiOff },
+};
+
+function DiagnosticsTab({ calibration, lastUpdate, staleInfo, shutoff }) {
+  return (
+    <div className="rounded-lg p-5" style={{ background: C.panel, border: `1px solid ${C.line}` }}>
+      <div className="flex items-center gap-2 mb-4">
+        <Stethoscope size={15} color={C.textDim} />
+        <h2 className="text-sm" style={{ color: C.text, fontFamily: sansFont, fontWeight: 500 }}>
+          Sensor diagnostics
+        </h2>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table className="w-full" style={{ borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ borderBottom: `1px solid ${C.line}` }}>
+              {["Sensor", "Category", "Status", "Last updated", "Last calibrated"].map((h) => (
+                <th key={h} className="text-left py-2 px-2 text-[11px]" style={{ color: C.textFaint, fontFamily: sansFont, fontWeight: 500 }}>
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {SENSORS.map((def) => {
+              const enabled = isSensorEnabled(def, calibration);
+              let key = "reporting";
+              if (!enabled) key = "not_installed";
+              else if (shutoff) key = "paused";
+              else if (staleInfo?.[def.id]) key = "stale";
+              const status = DIAG_STATUS[key];
+              const Icon = status.icon;
+              const updated = lastUpdate?.[def.id];
+              return (
+                <tr key={def.id} style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+                  <td className="py-2 px-2 text-xs" style={{ color: enabled ? C.text : C.textFaint, fontFamily: sansFont }}>
+                    {def.label}
+                  </td>
+                  <td className="py-2 px-2 text-xs" style={{ color: C.textFaint, fontFamily: sansFont }}>
+                    {CATEGORIES.find((c) => c.id === def.category)?.label}
+                  </td>
+                  <td className="py-2 px-2 text-xs">
+                    <span className="flex items-center gap-1.5" style={{ color: status.color, fontFamily: sansFont }}>
+                      <Icon size={12} />
+                      {status.label}
+                    </span>
+                  </td>
+                  <td className="py-2 px-2 text-xs" style={{ color: C.textFaint, fontFamily: monoFont }}>
+                    {enabled && updated ? new Date(updated).toLocaleTimeString() : "—"}
+                  </td>
+                  <td className="py-2 px-2 text-xs" style={{ color: C.textFaint, fontFamily: monoFont }}>
+                    {enabled && calibration?.calibratedAt ? new Date(calibration.calibratedAt).toLocaleDateString() : "—"}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] mt-4" style={{ color: C.textFaint, fontFamily: sansFont }}>
+        "Stale" means a sensor stopped sending new readings — treat it as a fault to check, not a flat, stable value.
+        Recalibrate under Advanced settings to change which sensors are installed.
+      </p>
     </div>
   );
 }
@@ -1202,6 +1886,20 @@ export default function BiogasDashboard() {
   const [shutoffAt, setShutoffAt] = useState(null);
   const [showShutoffConfirm, setShowShutoffConfirm] = useState(false);
   const [events, setEvents] = useState([]);
+  const [feedingLog, setFeedingLog] = useState([]);
+  const [maintenanceLog, setMaintenanceLog] = useState([]);
+  const [dailyRollups] = useState(() => {
+    const r = {};
+    SENSORS.forEach((s) => (r[s.id] = genDailyRollup(s)));
+    return r;
+  });
+  const [staleInfo, setStaleInfo] = useState({});
+  const [lastUpdate, setLastUpdate] = useState(() => {
+    const now = Date.now();
+    const u = {};
+    SENSORS.forEach((s) => (u[s.id] = now));
+    return u;
+  });
   const tickRef = useRef(HISTORY_LEN);
   const prevStatusRef = useRef({});
 
@@ -1215,27 +1913,59 @@ export default function BiogasDashboard() {
     if (shutoff) return; // simulation paused while shut off
     const id = setInterval(() => {
       tickRef.current += 1;
-      setHistories((prev) => {
-        const next = {};
-        SENSORS.forEach((def) => {
-          const arr = prev[def.id];
-          const last = arr[arr.length - 1].v;
-          const v = nextValue(def, last);
-          next[def.id] = [...arr.slice(1), { t: tickRef.current, v }];
+      const currentTick = tickRef.current;
+      const now = Date.now();
+      const updatedIds = [];
 
-          if (isSensorEnabled(def, calibration)) {
-            const newStatus = statusOf(def, v);
-            const oldStatus = prevStatusRef.current[def.id] ?? "normal";
-            if (newStatus !== oldStatus) {
-              if (newStatus === "critical") addEvent("critical", `${def.label} crossed its hazard threshold (${v} ${def.unit})`);
-              else if (newStatus === "warning") addEvent("warning", `${def.label} drifted outside target range (${v} ${def.unit})`);
-              else addEvent("info", `${def.label} returned to normal (${v} ${def.unit})`);
-            }
-            prevStatusRef.current[def.id] = newStatus;
+      setStaleInfo((prevStale) => {
+        const nextStale = { ...prevStale };
+        SENSORS.forEach((def) => {
+          if (nextStale[def.id]) {
+            // small chance a stale sensor recovers each tick
+            if (Math.random() < 0.12) delete nextStale[def.id];
+          } else if (isSensorEnabled(def, calibration) && Math.random() < 0.003) {
+            // rare random fault: sensor stops reporting for a while
+            nextStale[def.id] = true;
           }
         });
-        return next;
+
+        setHistories((prev) => {
+          const next = {};
+          SENSORS.forEach((def) => {
+            const arr = prev[def.id];
+            if (nextStale[def.id]) {
+              next[def.id] = arr; // frozen — no new sample while stale
+              return;
+            }
+            const last = arr[arr.length - 1].v;
+            const v = nextValue(def, last);
+            next[def.id] = [...arr.slice(1), { t: currentTick, v }];
+            updatedIds.push(def.id);
+
+            if (isSensorEnabled(def, calibration)) {
+              const newStatus = statusOf(def, v);
+              const oldStatus = prevStatusRef.current[def.id] ?? "normal";
+              if (newStatus !== oldStatus) {
+                if (newStatus === "critical") addEvent("critical", `${def.label} crossed its hazard threshold (${v} ${def.unit})`);
+                else if (newStatus === "warning") addEvent("warning", `${def.label} drifted outside target range (${v} ${def.unit})`);
+                else addEvent("info", `${def.label} returned to normal (${v} ${def.unit})`);
+              }
+              prevStatusRef.current[def.id] = newStatus;
+            }
+          });
+          return next;
+        });
+
+        return nextStale;
       });
+
+      if (updatedIds.length > 0) {
+        setLastUpdate((prev) => {
+          const next = { ...prev };
+          updatedIds.forEach((id) => (next[id] = now));
+          return next;
+        });
+      }
     }, calibration?.tickMs || DEFAULT_TICK_MS);
     return () => clearInterval(id);
   }, [shutoff, calibration]);
@@ -1253,6 +1983,14 @@ export default function BiogasDashboard() {
     addEvent("info", "System resumed by operator");
   };
 
+  const acknowledgeEvent = (id, note) => {
+    setEvents((prev) => prev.map((e) => (e.id === id ? { ...e, acknowledged: true, note, resolvedAt: Date.now() } : e)));
+  };
+
+  const addFeeding = (entry) => setFeedingLog((prev) => [...prev, entry]);
+  const deleteFeeding = (id) => setFeedingLog((prev) => prev.filter((e) => e.id !== id));
+  const addMaintenance = (entry) => setMaintenanceLog((prev) => [...prev, entry]);
+
   const alertCount = SENSORS.filter((def) => {
     if (!isSensorEnabled(def, calibration)) return false;
     const h = histories[def.id];
@@ -1265,14 +2003,21 @@ export default function BiogasDashboard() {
     setTab(catId);
   };
 
-  const tabs = [{ id: "overview", label: "Overview" }, ...CATEGORIES.map((c) => ({ id: c.id, label: c.label }))];
+  const tabs = [
+    { id: "overview", label: "Overview" },
+    ...CATEGORIES.map((c) => ({ id: c.id, label: c.label })),
+    { id: "feeding", label: "Feeding" },
+    { id: "trends", label: "History" },
+    { id: "maintenance", label: "Maintenance" },
+    { id: "diagnostics", label: "Diagnostics" },
+  ];
 
   if (phase === "calibration") {
     return (
       <CalibrationPage
         initial={calibration}
         onComplete={(cal) => {
-          setCalibration(cal);
+          setCalibration({ ...cal, calibratedAt: Date.now() });
           setPhase("dashboard");
         }}
       />
@@ -1392,8 +2137,10 @@ export default function BiogasDashboard() {
           ))}
         </div>
 
-        {tab === "overview" && <OverviewTab histories={histories} onJump={jumpTo} events={events} calibration={calibration} />}
-        {tab !== "overview" && (
+        {tab === "overview" && (
+          <OverviewTab histories={histories} onJump={jumpTo} events={events} calibration={calibration} onAcknowledge={acknowledgeEvent} />
+        )}
+        {CATEGORIES.some((c) => c.id === tab) && (
           <CategoryTab
             catId={tab}
             selected={selectedByCat[tab]}
@@ -1402,6 +2149,10 @@ export default function BiogasDashboard() {
             calibration={calibration}
           />
         )}
+        {tab === "feeding" && <FeedingTab feedingLog={feedingLog} onAdd={addFeeding} onDelete={deleteFeeding} />}
+        {tab === "trends" && <HistoryTab dailyRollups={dailyRollups} calibration={calibration} />}
+        {tab === "maintenance" && <MaintenanceTab maintenanceLog={maintenanceLog} onAdd={addMaintenance} />}
+        {tab === "diagnostics" && <DiagnosticsTab calibration={calibration} lastUpdate={lastUpdate} staleInfo={staleInfo} shutoff={shutoff} />}
       </div>
     </div>
   );
